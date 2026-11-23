@@ -2,6 +2,8 @@ import {heading, panel} from '../components/common/heading.js';
 import {entries, records} from '../components/common/records.js';
 import {date, esc} from '../utils/dom.js';
 import {topic} from '../constants/project.js';
+import {submit} from '../hooks/submit.js';
+import {go} from '../router/hash.js';
 
 export function casesPage(state, identity) {
   const {spec, session, cases, runs} = state;
@@ -9,6 +11,12 @@ export function casesPage(state, identity) {
   const operator = session.role==='operator';
   const rows = cases.map(row=>[`<a href="#cases/${row.id}" ${row.id===selected?.id?'aria-current="true"':''}>${esc(row.title)}</a>`, esc(row.author), esc(date(row.created_at))]);
   const instruction = selected ? `<h2>${esc(selected.title)}</h2><p>${esc(spec.guidance)}</p>` : '';
+  const openForm = selected && operator ? `<form id="inventory-open-form" data-case="${selected.id}">
+    <h2>开立称料盘点单</h2>
+    <label class="field"><span>盘点单名称</span><input name="title" required maxlength="120" value="称料盘点 · ${esc(selected.title)}"></label>
+    <label class="field"><span>每页配方数</span><input name="page_size" type="number" min="1" max="50" step="1" value="3" required></label>
+    <div class="actions"><button>开单盘点</button></div>
+    <p class="note">开单固定当前水位 ${esc(selected.payload?.head_seq ?? '—')}，此后配方写入或撤版不影响本单翻页。</p></form>` : '';
   const input = selected ? Object.entries(selected.payload).map(([key, value])=>{
     const label = spec.field_labels[key] || key;
     const rows = Array.isArray(value) && value.every(x=>x && typeof x === 'object' && !Array.isArray(x));
@@ -16,6 +24,16 @@ export function casesPage(state, identity) {
   }).join('') : '';
   return `${heading(topic.modules[0], spec.summary, operator?'<a class="button" href="#editor">建立档案</a>':'')}
     <div class="spread"><section aria-label="档案目录">${records([spec.entity_labels[0], '经办', '建立时间'], rows, '尚未建立档案。经办员可以从演示资料建立第一份。')}</section>
-    <aside class="brief">${instruction || `<h2>${esc(spec.customer)}</h2>`}${selected?`<p class="note">该档案记录 ${runs.filter(row=>row.case_id===selected.id).length} 次执行。</p>`:''}${selected&&operator?`<a href="#editor/${selected.id}">复制为新档案</a>`:''}</aside></div>
+    <aside class="brief">${instruction || `<h2>${esc(spec.customer)}</h2>`}${selected?`<p class="note">该档案记录 ${runs.filter(row=>row.case_id===selected.id).length} 次执行。</p>`:''}${selected&&operator?`<a href="#editor/${selected.id}">复制为新档案</a>`:''}${openForm}</aside></div>
     ${input ? `<div class="inspection">${input}</div>`:''}`;
+}
+
+export function bindCases(api, fail) {
+  const form = document.getElementById('inventory-open-form');
+  if (!form) return;
+  submit('inventory-open-form', async data=>{
+    const order = await api(`/cases/${form.dataset.case}/inventory`, {method:'POST',
+      data:{title:data.get('title'), page_size:Number(data.get('page_size'))}});
+    go(`inventory/${order.id}`);
+  }, fail);
 }

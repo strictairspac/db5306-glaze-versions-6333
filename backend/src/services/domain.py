@@ -1,4 +1,4 @@
-"""回放釉料配方读快照，输出按配方归组的历史回收预检。"""
+"""回放釉料配方读快照，输出按配方归组的历史回收预检；在办盘点单未确认页的版次暂缓回收。"""
 
 from .glaze_history import (
     Version,
@@ -59,10 +59,11 @@ def validate(payload):
     parse_ledger(payload)
 
 
-def solve(payload, engine):
+def solve(payload, engine=None):
     """Simulate collection in the supplied ledger by removing planned prefixes."""
     ledger = parse_ledger(payload)
     watermark = ledger.watermark
+    pins, holds = _active_pins(engine)
     reads = [
         ("活跃快照", snapshot.snapshot_id, snapshot.read_seq)
         for snapshot in ledger.snapshots
@@ -73,9 +74,18 @@ def solve(payload, engine):
     batch_rows = []
     collect_count = 0
     current_count = 0
+    held_count = 0
 
     for formula_id, chain in ledger.chains.items():
-        prefix_size = collectible_prefix_size(chain, watermark)
+        base_prefix = collectible_prefix_size(chain, watermark)
+        prefix_size = base_prefix
+        pinned = pins.get(formula_id)
+        if pinned:
+            held = [index for index, version in enumerate(chain) if version.commit_seq in pinned]
+            if held:
+                # 未确认盘点页命中的版次不得进入可回收前缀。
+                prefix_size = min(prefix_size, held[0])
+        held_count += base_prefix - prefix_size
         retained = chain[prefix_size:]
         collect_count += prefix_size
         if prefix_size:
@@ -95,7 +105,8 @@ def solve(payload, engine):
                 "版本操作": "删除" if version.recipe is None else "写入",
                 "釉料配方": version.recipe,
                 "判定": "可回收" if eligible else "保留",
-                "依据": _collection_reason(chain, index, watermark, eligible),
+                "依据": _collection_reason(chain, index, watermark, eligible,
+                                           prefix_size <= index < base_prefix),
             })
         for read_type, snapshot_id, read_seq in reads:
             hit = version_at(chain, read_seq)
@@ -121,34 +132,49 @@ def solve(payload, engine):
     sources = [
         snapshot.snapshot_id for snapshot in ledger.snapshots if snapshot.read_seq == watermark
     ]
-    return {
-        "summary": (
-            f"回收低水位为 {watermark}，{len(batch_rows)} 个配方批次共 {collect_count} 条版本可回收。"
-            f"已核对 {len(read_rows)} 条配方读取，模拟回收前后的可见配方一致。"
-        ),
-        "metrics": {
+    summary = (
+        f"回收低水位为 {watermark}，{len(batch_rows)} 个配方批次共 {collect_count} 条版本可回收。"
+        f"已核对 {len(read_rows)} 条配方读取，模拟回收前后的可见配方一致。"
+    )
+    metrics = {
+        "回收低水位": watermark,
+        "活跃快照数": len(ledger.snapshots),
+        "配方版本数": total_versions,
+        "历史回收批次数": len(batch_rows),
+        "可回收版本数": collect_count,
+        "保留版本数": total_versions - collect_count,
+        "当前可见配方数": current_count,
+        "读取核对数": len(read_rows),
+    }
+    sections = [
+        {"title": "回收低水位依据", "rows": [{
+            "已提交水位": ledger.head_seq,
             "回收低水位": watermark,
             "活跃快照数": len(ledger.snapshots),
-            "配方版本数": total_versions,
-            "历史回收批次数": len(batch_rows),
-            "可回收版本数": collect_count,
-            "保留版本数": total_versions - collect_count,
-            "当前可见配方数": current_count,
-            "读取核对数": len(read_rows),
-        },
-        "sections": [
-            {"title": "回收低水位依据", "rows": [{
-                "已提交水位": ledger.head_seq,
-                "回收低水位": watermark,
-                "活跃快照数": len(ledger.snapshots),
-                "低水位来源": "最早活跃快照" if sources else "无活跃快照，取已提交水位",
-                "限制回收的快照": "、".join(sources) if sources else None,
-            }]},
-            {"title": "配方读取与回收后复核", "rows": read_rows},
-            {"title": "逐版本留存依据", "rows": version_rows},
-            {"title": "待核准回收批单", "rows": batch_rows},
-        ],
+            "低水位来源": "最早活跃快照" if sources else "无活跃快照，取已提交水位",
+            "限制回收的快照": "、".join(sources) if sources else None,
+        }]},
+        {"title": "配方读取与回收后复核", "rows": read_rows},
+        {"title": "逐版本留存依据", "rows": version_rows},
+        {"title": "待核准回收批单", "rows": batch_rows},
+    ]
+    if holds:
+        metrics["在办盘点单数"] = len({row["盘点单"] for row in holds})
+        metrics["盘点留存版本数"] = held_count
+        sections.append({"title": "称料盘点留存", "rows": holds})
+        summary += f"在办盘点单未确认页留存 {held_count} 条版本。"
+    return {
+        "summary": summary,
+        "metrics": metrics,
+        "sections": sections,
     }
+
+
+def _active_pins(engine):
+    if engine is None:
+        return {}, []
+    from src.services.inventory import active_pins
+    return active_pins(engine)
 
 
 def _read_status(hit: Version | None) -> str:
@@ -159,7 +185,10 @@ def _read_status(hit: Version | None) -> str:
     return "可见"
 
 
-def _collection_reason(chain: list[Version], index: int, watermark: int, eligible: bool) -> str:
+def _collection_reason(chain: list[Version], index: int, watermark: int, eligible: bool,
+                       held: bool = False) -> str:
+    if held:
+        return "称料盘点单未确认页命中此版次，确认前暂缓回收"
     version = chain[index]
     if version.commit_seq > watermark:
         return f"提交序号高于低水位 {watermark}，保留该读取区间的变化"

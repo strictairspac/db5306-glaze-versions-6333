@@ -12,3 +12,8 @@ class Status(StrEnum):
     RUNNING = 'running'
     COMPLETE = 'complete'
     FAILED = 'failed'
+
+
+class Inventory(StrEnum):
+    ACTIVE = 'active'
+    COMPLETE = 'complete'

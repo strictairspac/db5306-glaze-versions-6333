@@ -1,5 +1,5 @@
-from sqlalchemy import (JSON, Column, ForeignKey, Integer, MetaData, String,
-                        Table, Text)
+from sqlalchemy import (JSON, BigInteger, Column, ForeignKey, Integer,
+                        MetaData, String, Table, Text, UniqueConstraint)
 
 schema = MetaData()
 users = Table('accounts', schema,
@@ -38,3 +38,22 @@ audit = Table('audit_events', schema,
     Column('action', String(32), nullable=False),
     Column('reference', String(50), nullable=False),
     Column('created_at', String(32), nullable=False))
+inventory_orders = Table('inventory_orders', schema,
+    Column('id', Integer, primary_key=True),
+    Column('case_id', ForeignKey('business_cases.id'), nullable=False, index=True),
+    Column('title', String(120), nullable=False),
+    Column('watermark', BigInteger, nullable=False),
+    Column('page_size', Integer, nullable=False),
+    Column('page_count', Integer, nullable=False),
+    Column('status', String(20), nullable=False, index=True),
+    Column('owner', String(40), nullable=False),
+    Column('created_at', String(32), nullable=False),
+    Column('completed_at', String(32)))
+inventory_pages = Table('inventory_pages', schema,
+    Column('id', Integer, primary_key=True),
+    Column('order_id', ForeignKey('inventory_orders.id'), nullable=False, index=True),
+    Column('page_index', Integer, nullable=False),
+    Column('items', JSON, nullable=False),
+    Column('confirmed_by', String(40)),
+    Column('confirmed_at', String(32)),
+    UniqueConstraint('order_id', 'page_index', name='uq_inventory_pages'))

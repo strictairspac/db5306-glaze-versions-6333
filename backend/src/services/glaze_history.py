@@ -113,3 +113,23 @@ def collectible_prefix_size(chain: list[Version], watermark: int) -> int:
 
 def visible_version(hit: Version | None) -> Version | None:
     return hit if hit is not None and hit.recipe is not None else None
+
+
+def inventory_plan(ledger: Ledger, page_size: int) -> list[list[dict]]:
+    """Fixed paging over the formulas visible at the ledger's head watermark.
+
+    Each page records the exact version a stocktake order sees, so commits or
+    withdrawals after the order opens cannot shift entries between pages.
+    """
+    items = []
+    for formula_id, chain in ledger.chains.items():
+        hit = version_at(chain, ledger.head_seq)
+        if hit is None:
+            continue
+        items.append({
+            "formula_id": formula_id,
+            "commit_seq": hit.commit_seq,
+            "operation": "写入" if hit.recipe is not None else "删除",
+            "recipe": hit.recipe,
+        })
+    return [items[start:start + page_size] for start in range(0, len(items), page_size)]
